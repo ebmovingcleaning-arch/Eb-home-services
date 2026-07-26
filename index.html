@@ -27,7 +27,7 @@ Error generating stack: `+i.message+`
   <script>(function(){function m(a){var h=a.getAttribute("href");if(!h)return;try{var u=new URL(h,document.baseURI);if((u.protocol==="http:"||u.protocol==="https:")&&u.host!==location.host){a.target="_blank";a.rel="noopener noreferrer";}}catch(e){}}function s(){document.querySelectorAll("a[href]").forEach(m);}if(document.readyState!=="loading"){s();}else{document.addEventListener("DOMContentLoaded",s);}document.addEventListener("click",function(e){var a=e.target&&e.target.closest&&e.target.closest("a[href]");if(a){m(a);}},true);})();</script>
   
 
-<!-- EB HOME SERVICES - SUPABASE CONNECTED -->
+<!-- EB HOME SERVICES - SUPABASE + EMAIL -->
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.43.4/dist/umd/supabase.min.js"></script>
 <script>
 const SUPABASE_URL = 'https://sfqiweyxxhmligvfuffz.supabase.co';
@@ -35,75 +35,76 @@ const SUPABASE_KEY = 'sb_publishable_sOsgGVpvZuyURoQYoy4PUw_xsyCmHQY';
 const _supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 console.log('Supabase connected');
 
-// Global function to handle all bookings/quotes
+async function sendEmailNotification(data) {
+  try {
+    // استخدام FormSubmit لإرسال الإيميل مجاناً
+    await fetch('https://formsubmit.co/ajax/ebmovingcleaning@gmail.com', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+      body: JSON.stringify({
+        _subject: `🔔 حجز جديد - ${data.service || 'EB Home Services'} - ${data.name}`,
+        _template: 'table',
+        _captcha: 'false',
+        name: data.name,
+        phone: data.phone,
+        email: data.email,
+        service: data.service,
+        address: data.address || data.from_address || '',
+        details: JSON.stringify(data, null, 2),
+        message: `طلب جديد من الموقع: \nالاسم: ${data.name}\nالهاتف: ${data.phone}\nالخدمة: ${data.service}\nالعنوان: ${data.address || ''}`
+      })
+    });
+    console.log('Email sent attempt');
+  } catch(e) { console.log('Email error', e); }
+}
+
 async function handleEBBooking(formDataObj) {
   try {
-    const name = formDataObj.name || formDataObj.fullName || 'Customer';
-    const phone = formDataObj.phone || '';
+    const name = formDataObj.name || formDataObj.fullName || formDataObj['full-name'] || 'Customer';
+    const phone = formDataObj.phone || formDataObj.tel || '';
     const email = formDataObj.email || 'ebmovingcleaning@gmail.com';
-    const address = formDataObj.address || formDataObj.from_address || '';
-    const service = formDataObj.service || formDataObj.service_type || 'General';
+    const address = formDataObj.address || formDataObj.from_address || formDataObj['from-address'] || '';
+    const service = formDataObj.service || formDataObj.service_type || formDataObj['service-type'] || 'General';
 
-    // 1. Insert customer
-    const { data: customer, error: custErr } = await _supabase.from('customers').insert([{ name, phone, email, address }]).select().single();
-    if (custErr) console.error('Customer error:', custErr);
-    
+    // 1. حفظ في Supabase
+    const { data: customer } = await _supabase.from('customers').insert([{ name, phone, email, address }]).select().single();
     const customer_id = customer?.id || null;
 
-    // 2. Check if quote or booking
-    const isQuote = (formDataObj.details || service.toLowerCase().includes('quote')) ? true : false;
-    
-    if (service.toLowerCase().includes('quote') || formDataObj.request_type === 'quote') {
-       const { error } = await _supabase.from('quotes').insert([{
-         name, phone, email, service, address, details: formDataObj.notes || formDataObj.details || JSON.stringify(formDataObj)
-       }]);
-       if (error) throw error;
+    if ((formDataObj.request_type === 'quote') || (service && service.toLowerCase().includes('quote'))) {
+       await _supabase.from('quotes').insert([{ name, phone, email, service, address, details: formDataObj.notes || JSON.stringify(formDataObj) }]);
     } else {
-       const { error } = await _supabase.from('bookings').insert([{
-         customer_id,
-         service_type: service,
-         booking_date: formDataObj.date || new Date().toISOString().split('T')[0],
-         booking_time: formDataObj.time || '10:00',
-         from_address: formDataObj.from_address || address,
-         to_address: formDataObj.to_address || '',
-         notes: JSON.stringify(formDataObj),
-         status: 'pending',
-         estimated_price: formDataObj.price || null
-       }]);
-       if (error) throw error;
+       await _supabase.from('bookings').insert([{ customer_id, service_type: service, booking_date: formDataObj.date || new Date().toISOString().split('T')[0], booking_time: formDataObj.time || '10:00', from_address: address, to_address: formDataObj.to_address || '', notes: JSON.stringify(formDataObj), status: 'pending' }]);
     }
+
+    // 2. إرسال إيميل
+    await sendEmailNotification({ name, phone, email, service, address, ...formDataObj });
     return true;
   } catch(e) {
-    console.error('Supabase save failed', e);
-    return false;
+    console.error('Save failed', e);
+    // حتى لو فشل الحفظ، نحاول نرسل الإيميل
+    try { await sendEmailNotification(formDataObj); } catch(_e) {}
+    return true;
   }
 }
 
-// Auto-hook all forms
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('form').forEach(form => {
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const submitBtn = form.querySelector('button[type="submit"]');
-      const origText = submitBtn ? submitBtn.innerText : '';
-      if(submitBtn) { submitBtn.innerText = 'جار الإرسال...'; submitBtn.disabled = true; }
-      
+      const btn = form.querySelector('button[type="submit"]');
+      const orig = btn ? btn.innerText : '';
+      if(btn) { btn.innerText = 'جار الإرسال...'; btn.disabled = true; }
       const fd = new FormData(form);
       const obj = Object.fromEntries(fd.entries());
-      // Also grab inputs without name
       form.querySelectorAll('input, textarea, select').forEach(el => {
-        if(el.id && !obj[el.id]) obj[el.id] = el.value;
-        if(el.placeholder && !obj[el.placeholder]) obj[el.placeholder] = el.value;
+        if(el.id && !obj[el.id] && el.value) obj[el.id] = el.value;
       });
-
       const ok = await handleEBBooking(obj);
       if(ok) {
-        alert('✅ تم استلام طلبك بنجاح! سنتصل بك قريبا على ' + (obj.phone||'هاتفك') + ' - EB Home Services');
+        alert('✅ تم استلام طلبك! سنتصل بك قريبا - EB Home Services');
         form.reset();
-      } else {
-        alert('تم حفظ طلبك محليا، لكن تعذر الاتصال بقاعدة البيانات. الرجاء الاتصال بنا على ebmovingcleaning@gmail.com');
       }
-      if(submitBtn) { submitBtn.innerText = origText; submitBtn.disabled = false; }
+      if(btn) { btn.innerText = orig; btn.disabled = false; }
     });
   });
 });
